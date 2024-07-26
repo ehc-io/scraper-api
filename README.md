@@ -39,25 +39,25 @@ The service exposes a single POST endpoint at `/navigate`. Here are some exampl
   -H "Content-Type: application/json"\
   -d '{"url": "https://example.com"}'`
 
-1.  Click at specific coordinates:
+2.  Click at specific coordinates:
 
 `curl -X POST http://localhost:3000/navigate\
   -H "Content-Type: application/json"\
   -d '{"url": "https://example.com", "mode": "pixel-click", "h": 100, "w": 200}'`
 
-1.  Click on an element using a CSS selector:
+3.  Click on an element using a CSS selector:
 
 `curl -X POST http://localhost:3000/navigate\
   -H "Content-Type: application/json"\
   -d '{"url": "https://example.com", "mode": "selector-click", "selector": "#submit-button"}'`
 
-1.  Capture a screenshot:
+4.  Capture a screenshot:
 
 `curl -X POST http://localhost:3000/navigate\
   -H "Content-Type: application/json"\
   -d '{"url": "https://example.com", "screenshot": true}'`
 
-1.  Save HTML content:
+5.  Save HTML content:
 
 `curl -X POST http://localhost:3000/navigate\
   -H "Content-Type: application/json"\
