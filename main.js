@@ -3,18 +3,82 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs').promises;
 const path = require('path');
+const cheerio = require('cheerio');
 
 const app = express();
 app.use(express.json());
-
 puppeteer.use(StealthPlugin());
 
+// const PORT = 8502;
+const PORT = 3000;
+
+// const downloadsFolder = "/mnt/genai/scraper_downloads/";
 const downloadsFolder = "/downloads"
-const defaultPageLoadTimeout = 3000
+
+function html2Markdown(html) {
+    const $ = cheerio.load(html);
+
+    // Remove unnecessary elements
+    $('script, style, header, footer, nav').remove();
+
+    const body = $('body').length ? $('body') : $.root();
+
+    function convertElement(element) {
+        if (element.type === 'text') {
+            return element.data;
+        }
+        const tagName = element.tagName;
+        const $element = $(element);
+
+        if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tagName)) {
+            return `${'#'.repeat(parseInt(tagName[1]))} ${$element.text().trim()}\n\n`;
+        }
+        if (tagName === 'p') {
+            return `${$element.text().trim()}\n\n`;
+        }
+        if (tagName === 'a') {
+            return `[${$element.text()}](${$element.attr('href') || ''})`;
+        }
+        if (tagName === 'img') {
+            return `![${$element.attr('alt') || ''}](${$element.attr('src') || ''})`;
+        }
+        if (['ul', 'ol'].includes(tagName)) {
+            const items = [];
+            $element.children('li').each((i, li) => {
+                const prefix = tagName === 'ul' ? '- ' : `${i + 1}. `;
+                items.push(`${prefix}${convertElement(li).trim()}`);
+            });
+            return items.join('\n') + '\n\n';
+        }
+        if (['strong', 'b'].includes(tagName)) {
+            return `**${$element.text()}**`;
+        }
+        if (['em', 'i'].includes(tagName)) {
+            return `*${$element.text()}*`;
+        }
+        if (tagName === 'code') {
+            return `\`${$element.text()}\``;
+        }
+        if (tagName === 'pre') {
+            return `\`\`\`\n${$element.text()}\n\`\`\`\n\n`;
+        }
+        return $element.contents().map((i, child) => convertElement(child)).get().join('');
+    }
+
+    let markdown = convertElement(body[0]);
+    // Clean up extra newlines
+    markdown = markdown.replace(/\n{3,}/g, '\n\n');
+    return markdown.trim();
+}
 
 function logMessage(message) {
   const timestamp = new Date().toISOString();
   console.log(`[${Date.now()}.${timestamp}] ${message}`);
+}
+
+function getDataSize(data) {
+  const size = Buffer.byteLength(JSON.stringify(data), 'utf8');
+  return (size / 1024).toFixed(2) + 'KB';
 }
 
 async function ensureDirectoryExists(directory) {
@@ -22,7 +86,7 @@ async function ensureDirectoryExists(directory) {
     await fs.access(directory);
   } catch {
     await fs.mkdir(directory);
-    console.log(`Directory '${directory}' created.`);
+    logMessage(`Directory '${directory}' created.`);
   }
 }
 
@@ -33,7 +97,7 @@ async function loadSessionData(page, sessionStateFolder) {
   const localStorageString = await fs.readFile(path.join(sessionStateFolder, "localStorage.json"));
   const localStorage = JSON.parse(localStorageString);
 
-  logMessage("loading session data ...");
+  logMessage("loading session data...");
   await page.setCookie(...cookies);
 
   await page.evaluateOnNewDocument((data) => {
@@ -46,26 +110,19 @@ async function loadSessionData(page, sessionStateFolder) {
 app.post('/navigate', async (req, res) => {
   logMessage('received request: ' + JSON.stringify(req.body));
   try {
-    const { url, h, w, mode, screenshot, html, selector, sessionState_enable, sessionStateFolder, forceWaitEnabled, forceWaitInterval = 3000 } = req.body;
-
+    const { url, mode, screenshot, save_html, selector, sessionStateFolder, pageLoadTimeout = 3000, outputMode = 'raw-html', structuredOutput = false } = req.body;
     if (!url) {
       logMessage('error: URL is required');
       return res.status(400).json({ error: 'URL is required' });
     }
-
-    if (mode === 'pixel-click' && (!h || !w)) {
-      logMessage('error: Height and width are required for pixel-click mode');
-      return res.status(400).json({ error: 'Height and width are required for pixel-click mode' });
-    }
-
-    if ((mode === 'selector-click' || mode === 'selector-load') && !selector) {
-      logMessage('error: CSS selector is required for selector-click or selector-load mode');
-      return res.status(400).json({ error: 'CSS selector is required for selector-click or selector-load mode' });
-    }
-
     if (!['pixel-click', 'selector-click', 'selector-load', 'full-body-load'].includes(mode)) {
       logMessage('error: Invalid mode');
       return res.status(400).json({ error: 'Invalid mode' });
+    }
+
+    if (!['raw-html', 'markdown'].includes(outputMode)) {
+      logMessage('error: Invalid output mode');
+      return res.status(400).json({ error: 'Invalid output mode' });
     }
 
     logMessage('launching browser...');
@@ -77,31 +134,27 @@ app.post('/navigate', async (req, res) => {
 
     await page.setViewport({ width: 1600, height: 900 });
 
-    if (sessionState_enable) {
-      if (!sessionStateFolder) {
-        logMessage('error: sessionStateFolder is required when sessionState_enable is True');
-        return res.status(400).json({ error: 'sessionStateFolder is required when sessionState_enable is True' });
-      }
+    if (sessionStateFolder) {
       await loadSessionData(page, sessionStateFolder);
     }
 
     logMessage(`navigating to ${url}...`);
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: defaultPageLoadTimeout });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: pageLoadTimeout });
 
     let htmlContent = '';
     if (mode === 'pixel-click') {
-      logMessage(`clicking at coordinates (${h}), ${w}...`);
-      await page.mouse.click(h, w);
+      logMessage(`clicking at coordinates...`);
+      await page.mouse.click(0, 0); // default coordinates
       logMessage('click performed');
       logMessage('waiting for navigation after click...');
-      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: defaultPageLoadTimeout });
+      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: pageLoadTimeout });
       logMessage('navigation after click completed');
     } else if (mode === 'selector-click') {
       logMessage(`clicking on element with selector ${selector}...`);
       await page.click(selector);
       logMessage('click performed');
       logMessage('waiting for navigation after click...');
-      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: defaultPageLoadTimeout });
+      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: pageLoadTimeout });
       logMessage('navigation after click completed');
     } else if (mode === 'selector-load') {
       logMessage(`loading content of element with selector ${selector}...`);
@@ -113,42 +166,36 @@ app.post('/navigate', async (req, res) => {
       logMessage('page content retrieved');
     }
 
-    if (forceWaitEnabled) {
-      logMessage(`force waiting for ${forceWaitInterval} ms...`);
-      await new Promise(resolve => setTimeout(resolve, forceWaitInterval));
-      logMessage('force wait completed');
+    let responseContent = htmlContent;
+    if (outputMode === 'markdown') {
+      logMessage('converting HTML to Markdown...');
+      responseContent = html2Markdown(htmlContent);
     }
 
-    let artifactUri = null;
-    if (screenshot) {
-      await ensureDirectoryExists(downloadsFolder); 
-      logMessage('taking screenshot...');
-      const timeStamp = Date.now();
-      const imagePath = path.join(downloadsFolder, `${timeStamp}.png`);
-      await page.screenshot({ path: imagePath, fullPage: false, captureBeyondViewport: false });
-      artifactUri = imagePath;
-      logMessage(`screenshot saved at ${imagePath}`);
-    }
-
-    let htmlFilePath = null;
-    if (html) {
-      logMessage('saving HTML content...');
-      const timeStamp = Date.now();
-      htmlFilePath = path.join(downloadsFolder, `${timeStamp}.html`);
-      await fs.writeFile(htmlFilePath, htmlContent);
-      logMessage(`HTML content saved at ${htmlFilePath}`);
+    let title = '';
+    if (structuredOutput) {
+      logMessage('retrieving page title...');
+      title = await page.title();
     }
 
     await browser.close();
     logMessage('browser closed');
 
-    logMessage('sending response...');
-    res.json({
-      artifact_uri: artifactUri,
-      html_file_path: htmlFilePath,
-      html_body: htmlContent,
-    });
-    logMessage('response sent');
+    let responseData;
+    if (structuredOutput) {
+      responseData = {
+        url: url,
+        title: title,
+        body: responseContent,
+      };
+      logMessage(`structured response sent (${getDataSize(responseData)})`);
+      res.json(responseData);
+    } else {
+      responseData = responseContent;
+      logMessage(`${outputMode} response sent (${getDataSize(responseData)})`);
+      res.set("Content-Type", outputMode === 'raw-html' ? "text/html" : "text/markdown");
+      res.send(responseData);
+    }
   } catch (error) {
     logMessage('Error occurred: ' + error.message);
     res.status(500).json({ error: 'An error occurred', details: error.message });
@@ -160,7 +207,6 @@ app.use((req, res) => {
   res.status(500).json({ error: 'Invalid endpoint' });
 });
 
-const PORT = 3000;
 app.listen(PORT, () => {
   logMessage(`server is running on port ${PORT}`);
 });

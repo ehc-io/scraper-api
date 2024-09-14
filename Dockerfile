@@ -28,8 +28,10 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 18
-RUN curl -fsSL https://deb.nodesource.com/setup_14.x | bash - && \
+RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
+    apt-get update && \
     apt-get install -y nodejs && \
+    npm install -g npm@latest && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Puppeteer dependencies including libcairo2
